@@ -1,7 +1,7 @@
 # Project Context & Decision Log — Messaging Platform
 
 > **Status:** Active source of truth  
-> **Last consolidated:** 2026-08-23 (added #12 — participant lifecycle / privacy-freedom principle)  
+> **Last consolidated:** 2026-08-23 (added Section 9 — Domain Model: entities, value objects, aggregates, invariants for User/Conversation/ConversationParticipant/Message)  
 > **Authority:** This document records product and architecture decisions specific to this project. `AGENTS.md` defines the operating principles and process. If they appear to conflict, this document governs project-specific decisions; the operating principles still govern how new decisions are made.
 >
 > **Change rule:** Do not edit or remove a historical decision. Record a new decision with a new ID and mark the earlier one `Superseded by #N` when applicable. Clarifications that do not alter a decision may be added with their date and source.
@@ -168,4 +168,77 @@ For externally observable events or integration contracts, additionally record: 
 
 ## 8. Next recommended lifecycle step
 
-The Section 6 gate is resolved (#12). Proceed to model `User`, `Conversation`, `ConversationParticipant`, and `Message`. Define invariants before database tables or REST/WebSocket payloads. Decisions #7–#10 should be reflected directly in the model and contracts; #12 should shape `Message` and `ConversationParticipant` so a future block relationship and per-participant delete-visibility flag don't require a breaking migration, without implementing them in v1. Before implementation, define a minimal service map, service-owned data, synchronous/asynchronous contract boundaries, and failure modes for the end-to-end MVP slice.
+Domain modeling (Section 9) is complete for `User`, `Conversation`, `ConversationParticipant`, and `Message` — entities, value objects, aggregates, and invariants are defined. Proceed next to: a minimal service map, service-owned data per service, synchronous/asynchronous contract boundaries, and failure modes for the end-to-end MVP slice (Architecture / Technical Planning stage). Database tables and REST/WebSocket payloads should be derived from Section 9, not designed independently of it.
+
+---
+
+## 9. Domain model — User, Conversation, ConversationParticipant, Message
+
+> **Consolidated:** 2026-08-23. Scope: entities, value objects, aggregates, invariants only. Database schema and API/WebSocket contracts are deliberately out of scope for this section — they belong to the next lifecycle step (Section 8) and must be derived from this model, not defined ahead of it.
+
+### 9.1 Entities
+
+| Entity | Identity | Aggregate role | Notes |
+| --- | --- | --- | --- |
+| `User` | `userId` | Root of its own aggregate | Email (#5) is a property, not the identity, despite being immutable. |
+| `Conversation` | `conversationId` | Root of the `Conversation` aggregate | Immutable participant set after creation in v1 (#12). |
+| `ConversationParticipant` | Composite `(conversationId, userId)` | Child entity within the `Conversation` aggregate | Created together with the `Conversation` in v1 — no later join. Future home for `lastReadSequence` (#9) and, post-v1, block/delete-visibility state (#12). |
+| `Message` | `messageId` (server-assigned, canonical per #8) | Root of its own aggregate — **decision confirmed 2026-08-23** | Carries `conversationId` and `senderId` as references, not object graph edges. |
+
+### 9.2 Value objects
+
+| Value object | Owning entity | Purpose |
+| --- | --- | --- |
+| `Email` | `User` | Normalized, globally unique, immutable (#5). |
+| `SequenceNumber` | `Message` | Server-assigned; strictly increasing within a conversation (#7). Modeled as a VO rather than a raw integer so "only the server assigns it, it only increases" is enforced at the type level. |
+| `ClientMessageId` | `Message` | Client-generated UUID used for send idempotency (#8). |
+| `MessageContent` | `Message` | Non-empty text in v1; encapsulates the "non-empty" validation in one place. |
+| `LastReadSequence` | `ConversationParticipant` | Wraps `SequenceNumber` with a "monotonic, never decreases" invariant (#9). |
+
+**Explicitly deferred, not modeled in v1:** `ParticipantRole` (no role concept while conversations are strictly 2-party), any block relationship, and any per-participant message-visibility flag. Per the 2026-08-23 decision, these are **not** added as placeholder fields now — v1's domain model carries only what v1 requires. #12 is satisfied by keeping the current shape from actively blocking these additions later (e.g. not hard-coding a two-party-only visibility assumption into `Message` itself), not by pre-adding empty fields. This is a design constraint to carry into the later persistence/schema decision, not a Section 9 model element.
+
+### 9.3 Aggregates
+
+**Aggregate 1 — `User`**
+Standalone; no child entities in v1.
+
+**Aggregate 2 — `Conversation` (root) + `ConversationParticipant` (child)**
+Grouped because the invariant "exactly two distinct participants, no duplicate pair" (#6) can only be enforced consistently if `Conversation` and its `ConversationParticipant`s are created/validated within one transactional boundary. `ConversationParticipant` has no reason to exist independently of its `Conversation`.
+
+**Aggregate 3 — `Message` (root, independent of `Conversation`) — confirmed 2026-08-23**
+`Message` is its own aggregate root rather than a child of `Conversation`. Rationale: a conversation can hold many thousands of messages; nesting `Message` under `Conversation` would force loading or paginating the whole history to validate any conversation-level invariant, violating the "keep aggregates small" principle, and doesn't fit a write-heavy, one-transaction-per-message pattern. `Message` holds `conversationId` as a plain reference.
+
+Trade-off accepted: `sequenceNumber`'s strict-increase and uniqueness guarantee (#7) is no longer self-enforced by a single aggregate instance, since it spans many `Message` instances within one `conversationId`. This becomes a cross-aggregate invariant that needs a mechanism at the application/domain-service or persistence layer (e.g. a per-conversation DB sequence/constraint, or a single-writer-per-conversation pattern). Design of that mechanism is explicitly deferred to Architecture/Technical Planning (see 9.5).
+
+### 9.4 Invariants enforceable within a single aggregate instance
+
+**`Conversation` + `ConversationParticipant`**
+
+- Exactly two participants, both distinct `User`s (#6).
+- Participant set does not change after creation in v1 — no leave/archive/delete (#12).
+- A participant's `LastReadSequence` only increases, never decreases (#9).
+
+**`Message`**
+
+- `MessageContent` must be non-empty.
+- `sequenceNumber` is assigned only by the server (never client-supplied) and increases relative to prior state at creation time.
+- `(conversationId, senderId, clientMessageId)` is unique; identical key + identical content returns the original accepted message (idempotent retry); identical key + different content is a conflict (#8).
+- Message content is immutable after creation in v1 (edit/delete out of v1 scope per #12).
+
+**`User`**
+
+- Email is unique system-wide and immutable after creation (#5).
+
+### 9.5 Invariants spanning multiple aggregate instances (not enforced by the model alone)
+
+These are recorded here so they are not lost, but **mechanism design is deferred to the Architecture/Technical Planning lifecycle step**, per the 2026-08-23 decision:
+
+- A given pair `(userA, userB)` has at most one `Conversation` (#6) — spans potentially many `Conversation` instances; needs a domain/application service or a uniqueness constraint at the persistence layer.
+- `sequenceNumber` values across all `Message`s sharing one `conversationId` must be strictly increasing and non-duplicate — spans many `Message` instances; see trade-off in 9.3.
+- The `senderId` of a `Message` must be a valid current participant of its `conversationId` at send time — spans the `Message` aggregate and the `Conversation` aggregate; `Message` does not hold a direct reference to `ConversationParticipant`, so this needs to be checked via an application/domain service against a repository, not via in-memory object navigation.
+
+### 9.6 Explicit decisions made during this modeling pass (2026-08-23)
+
+1. `Message` is confirmed as an independent aggregate root (not nested in `Conversation`).
+2. No placeholder fields (e.g. `visibilityState`, block relationship) are added to the v1 model for #12; the model is kept to v1's actual requirements, with the constraint that the eventual persistence/schema design must not foreclose adding them without a breaking migration.
+3. Design of the enforcement mechanism for cross-aggregate invariants (9.5) is deferred to the Architecture/Technical Planning lifecycle step, not designed here.
