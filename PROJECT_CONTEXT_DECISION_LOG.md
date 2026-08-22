@@ -1,7 +1,7 @@
 # Project Context & Decision Log — Messaging Platform
 
 > **Status:** Active source of truth  
-> **Last consolidated:** 2026-08-23  
+> **Last consolidated:** 2026-08-23 (added #12 — participant lifecycle / privacy-freedom principle)  
 > **Authority:** This document records product and architecture decisions specific to this project. `AGENTS.md` defines the operating principles and process. If they appear to conflict, this document governs project-specific decisions; the operating principles still govern how new decisions are made.
 >
 > **Change rule:** Do not edit or remove a historical decision. Record a new decision with a new ID and mark the earlier one `Superseded by #N` when applicable. Clarifications that do not alter a decision may be added with their date and source.
@@ -49,11 +49,13 @@ Do not prioritize feature parity, visual polish, user growth, or generic externa
 | #9 | 2026-08-23 | Active | Store each participant's monotonic `lastReadSequence` per conversation rather than a receipt record per message. Read state is derived: messages at or below the other participant's read position are read. | Compact for MVP and naturally extends to group conversations; no write per message is needed. | Revisit if per-message/per-device receipt auditability becomes a requirement. |
 | #10 | 2026-08-23 | Active | WebSocket delivers live messages only. After reload or reconnect, the client synchronizes persisted missed messages through REST using its last known per-conversation sequence; it then resumes live WebSocket delivery. | Separates durable sync from transient socket notification, makes recovery testable, and avoids socket-session backfill complexity. | Revisit for multi-device sync, offline-first clients, or a justified richer delivery protocol. |
 | #11 | 2026-08-23 | Active | Start the project with a microservices architecture, replacing the initial modular-monolith direction in #4. Preserve clear domain boundaries, stable contracts, and integration-first design. | Founder-directed architecture change. It enables early practice with service boundaries and distributed-system concerns, while adding operational, testing, data-consistency, and delivery complexity to MVP. Exact service boundaries and infrastructure choices remain unapproved until defined from the domain and MVP flows. | Revisit after the first end-to-end MVP slice demonstrates whether the added distribution cost is serving the learning and product goals. |
+| #12 | 2026-08-23 | Active | Resolves the Section 6 open question. Direct conversations are **immutable** in MVP v1 — no server-side leave, archive, or delete of the conversation itself. Message delete and Block remain **out of MVP v1**, deferred to the milestone immediately after v1 (does not change v1 acceptance scope). For that follow-up milestone, the product adopts a **Telegram-style, privacy/freedom-first model**: (a) **Block** is a real domain relationship (`User A blocks User B`) that prevents new messages from the blocked party; existing conversation/history is unaffected. (b) **Message delete** supports both "delete for me" (hidden only for the deleting participant) and "delete for everyone" (hidden for both participants) as user-chosen, per-message options; in both cases the server **always retains the underlying message data** — deletion is a per-participant visibility flag at the application layer, never physical/domain-level deletion. | Founder-directed: this product treats privacy, user data control, and freedom over one's own conversation as a core product value, not just a UX nicety. Keeping v1 scope to "immutable conversation" avoids re-opening the out-of-MVP message-edit/delete boundary while still recording the long-term shape so later domain modeling (delete-visibility per participant, block relationship) isn't designed blind. | Revisit if the privacy/freedom principle turns out to require server-side purge (e.g. legal/compliance need), or if "delete for everyone" needs additional guarantees (e.g. edit window, notification of deletion). |
 
 ### Interpretation notes
 
 - #1’s mention of group messaging is the product direction; #2 deliberately stages it after MVP v1. These are compatible, not competing decisions.
 - #11 supersedes #4’s modular-monolith starting point. Its boundary and contract principles remain active; it does not promise API keys, multi-tenancy, SDKs, webhooks, or OAuth in MVP.
+- #12 resolves the Section 6 gate: v1 domain modeling can proceed with an immutable-conversation assumption. Block and per-participant message-delete visibility are not modeled into v1 tables/contracts, but the domain model for `Message` and `ConversationParticipant` should anticipate them (e.g. avoid a shape that would require a breaking migration to add a visibility flag or a block relationship later).
 
 ---
 
@@ -85,7 +87,7 @@ Presence and the distinct `delivered` state retain their original “should have
 
 ### Explicitly out of MVP
 
-- Typing indicators; message edit/delete; attachments; push notifications; message search.
+- Typing indicators; message edit/delete (see #12 — planned as the milestone immediately after v1, not designed away); attachments; push notifications; message search.
 - Voice/video calls; AI features; stories/status; advanced multi-device sync.
 - External API keys, multi-tenancy, OAuth, SDKs, and webhooks.
 - Kafka, sharding, multi-region, Kubernetes, distributed WebSocket infrastructure, and service splits beyond the approved initial service map.
@@ -136,9 +138,7 @@ No Kafka merely to be “event-driven”; begin with the simplest service-to-ser
 
 ## 6. Decisions required before domain modeling
 
-The following question materially affects authorization and the participant lifecycle. Resolve it before treating the domain model as stable.
-
-1. **Authorization and membership lifecycle:** Can either participant leave, archive, block, or delete a direct conversation in MVP? If none applies, is membership immutable once created?
+1. **Authorization and membership lifecycle — RESOLVED by #12 (2026-08-23).** Direct conversations are immutable in v1 (no server-side leave/archive/delete). Block and per-message delete-visibility are deferred to the next milestone, with the shape recorded in #12 so the v1 domain model can anticipate them without a breaking migration.
 
 Questions that can wait until after initial domain modeling: exact frontend framework, presence protocol, delivered-state definition, group membership roles, and public/invite-email onboarding.
 
@@ -168,4 +168,4 @@ For externally observable events or integration contracts, additionally record: 
 
 ## 8. Next recommended lifecycle step
 
-Resolve the remaining participant-lifecycle question in section 6, then model `User`, `Conversation`, `ConversationParticipant`, and `Message`. Define invariants before database tables or REST/WebSocket payloads. Decisions #7–#10 should be reflected directly in the model and contracts. Before implementation, define a minimal service map, service-owned data, synchronous/asynchronous contract boundaries, and failure modes for the end-to-end MVP slice.
+The Section 6 gate is resolved (#12). Proceed to model `User`, `Conversation`, `ConversationParticipant`, and `Message`. Define invariants before database tables or REST/WebSocket payloads. Decisions #7–#10 should be reflected directly in the model and contracts; #12 should shape `Message` and `ConversationParticipant` so a future block relationship and per-participant delete-visibility flag don't require a breaking migration, without implementing them in v1. Before implementation, define a minimal service map, service-owned data, synchronous/asynchronous contract boundaries, and failure modes for the end-to-end MVP slice.
