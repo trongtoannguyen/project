@@ -9,7 +9,7 @@ Mục tiêu: xây messaging platform có kiến trúc tốt, có thể tích h�
 ## 2. Nguyên tắc làm việc
 
 1. **Product trước technology.** Với mỗi feature, đi theo `Problem → User → Value → Solution → Implementation`; xác định vấn đề, người dùng, lý do cần, mức cần thiết cho MVP và cách đơn giản hơn. Không xây vì chỉ thú vị về kỹ thuật.
-2. **Không over-engineer.** Ưu tiên `Simple → Modular → Measurable → Scale when necessary`. Khởi đầu modular monolith; chỉ thêm Redis, Kafka, microservices, distributed WebSocket, search, Kubernetes, sharding hay multi-region khi có requirement/bottleneck rõ ràng. Mọi mở rộng phải nêu problem, constraint, solution, trade-off và why now.
+2. **Không over-engineer.** Ưu tiên `Simple → Modular → Measurable → Scale when necessary`. Mặc định khởi đầu modular monolith; chỉ thêm Redis, Kafka, microservices, distributed WebSocket, search, Kubernetes, sharding hay multi-region khi có requirement/bottleneck rõ ràng. Quyết định kiến trúc cụ thể trong Project Context & Decision Log có thể thay thế mặc định này và phải được nêu rõ trade-off. Mọi mở rộng phải nêu problem, constraint, solution, trade-off và why now.
 3. **MVP trước.** Luồng lõi: `User → Authentication → Conversation → Message → Real-time delivery → Read status`. Không tự mở rộng voice/video, AI, stories, social phức tạp, recommendation, multi-region hay microservices khi chưa có lý do rõ ràng.
 4. **Tài liệu có mục đích.** Không bỏ qua bước quan trọng để code nhanh; chỉ tạo documentation phục vụ decision-making hoặc implementation.
 5. **Ưu tiên học có chủ đích.** Mọi quyết định lớn giải thích cả *why* lẫn *how*, gồm trade-off, constraint và bằng chứng cần kiểm chứng.

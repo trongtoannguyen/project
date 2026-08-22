@@ -41,18 +41,19 @@ Do not prioritize feature parity, visual polish, user growth, or generic externa
 | #1 | 2026-08-16 | Active | Build a self-owned real-time messaging platform for learning first, with later reuse in the founder's products. Initial intended capability includes 1-to-1 and group messaging. | Optimize for learning value and clean architecture rather than product-market fit. Real invited-user usage is part of validation. | Supersede only if project purpose changes. |
 | #2 | 2026-08-16 | Active | MVP v1 exposes **only 1-to-1 conversations**. Group chat is the immediately subsequent milestone. | Learn connection lifecycle, persistence, delivery, and read flow before group fan-out. Model participation for N users from the start, but enforce two participants in MVP. | Revisit after stable real-user validation of MVP v1 real-time delivery. |
 | #3 | 2026-08-16 | Active | Build a web client first; mobile follows later. The founder builds both backend and frontend. | Web enables faster end-to-end validation. MVP frontend is a functional test client, not a UI-polish project. | Revisit after MVP feedback or a mobile requirement. |
-| #4 | 2026-08-16 | Active | Start as a modular monolith with clear domain boundaries and integration-ready contracts. Do not build a generic external API in parallel with MVP. | The end-user application reveals what should become generic. A later API must be an access layer over application/domain contracts—not a database-model exposure. | Revisit when a concrete external consumer needs integration. |
+| #4 | 2026-08-16 | Superseded by #11 | Start as a modular monolith with clear domain boundaries and integration-ready contracts. Do not build a generic external API in parallel with MVP. | The end-user application reveals what should become generic. A later API must be an access layer over application/domain contracts—not a database-model exposure. | Superseded on 2026-08-23 by an initial-microservices direction. |
 | #5 | 2026-08-23 | Active | MVP identity uses a normalized, globally unique, immutable email. Registration is invite-only through a founder-managed email allowlist; no email invitation delivery workflow is required. | Fits a small private test while avoiding public-registration abuse and email-delivery scope. Email changes and password recovery are deferred. | Revisit when public onboarding or account recovery is required. |
 | #6 | 2026-08-23 | Active | A pair of distinct users has exactly one direct conversation; self-messaging is not allowed. | Prevents duplicate threads and simplifies conversation list, history, and receipt semantics. | Revisit only if multiple named threads per pair becomes a user need. |
 | #7 | 2026-08-23 | Active | Messages have a server-assigned, unique, strictly increasing `sequenceNumber` within a conversation. Client timestamps do not determine order; gap-free numbering is not a public guarantee. | Produces a deterministic order under concurrent sends and supports history sync and read positions without imposing unnecessary sequence guarantees. | Revisit if a different ordering or replication requirement emerges. |
 | #8 | 2026-08-23 | Active | The client creates and retains a UUID `clientMessageId` for each user send across retries/reconnects. The server enforces uniqueness on `(conversationId, senderId, clientMessageId)`; an equivalent retry returns the originally accepted message, while the same key with different content conflicts. | Prevents duplicate messages when a network response is lost and makes retry behaviour explicit. Server `messageId` remains the canonical identifier. | Revisit when additional client types or delivery protocols require a broader idempotency contract. |
 | #9 | 2026-08-23 | Active | Store each participant's monotonic `lastReadSequence` per conversation rather than a receipt record per message. Read state is derived: messages at or below the other participant's read position are read. | Compact for MVP and naturally extends to group conversations; no write per message is needed. | Revisit if per-message/per-device receipt auditability becomes a requirement. |
 | #10 | 2026-08-23 | Active | WebSocket delivers live messages only. After reload or reconnect, the client synchronizes persisted missed messages through REST using its last known per-conversation sequence; it then resumes live WebSocket delivery. | Separates durable sync from transient socket notification, makes recovery testable, and avoids socket-session backfill complexity. | Revisit for multi-device sync, offline-first clients, or a justified richer delivery protocol. |
+| #11 | 2026-08-23 | Active | Start the project with a microservices architecture, replacing the initial modular-monolith direction in #4. Preserve clear domain boundaries, stable contracts, and integration-first design. | Founder-directed architecture change. It enables early practice with service boundaries and distributed-system concerns, while adding operational, testing, data-consistency, and delivery complexity to MVP. Exact service boundaries and infrastructure choices remain unapproved until defined from the domain and MVP flows. | Revisit after the first end-to-end MVP slice demonstrates whether the added distribution cost is serving the learning and product goals. |
 
 ### Interpretation notes
 
 - #1’s mention of group messaging is the product direction; #2 deliberately stages it after MVP v1. These are compatible, not competing decisions.
-- #4 is an architectural constraint, not a promise to deliver API keys, multi-tenancy, SDKs, webhooks, or OAuth in MVP.
+- #11 supersedes #4’s modular-monolith starting point. Its boundary and contract principles remain active; it does not promise API keys, multi-tenancy, SDKs, webhooks, or OAuth in MVP.
 
 ---
 
@@ -87,7 +88,7 @@ Presence and the distinct `delivered` state retain their original “should have
 - Typing indicators; message edit/delete; attachments; push notifications; message search.
 - Voice/video calls; AI features; stories/status; advanced multi-device sync.
 - External API keys, multi-tenancy, OAuth, SDKs, and webhooks.
-- Microservices, Kafka, sharding, multi-region, Kubernetes, and distributed WebSocket infrastructure.
+- Kafka, sharding, multi-region, Kubernetes, distributed WebSocket infrastructure, and service splits beyond the approved initial service map.
 
 ---
 
@@ -95,16 +96,16 @@ Presence and the distinct `delivered` state retain their original “should have
 
 ### Constraints that apply now
 
-- **Modular monolith first:** Java, Spring Boot, PostgreSQL, Redis, WebSocket, REST API, JWT, Gradle, JUnit, Testcontainers, Docker, and GitHub Actions are the current intended starting stack. A substitution needs a recorded decision and rationale.
+- **Microservices from inception:** The system starts as independently deployable services with explicit contracts. Service boundaries must derive from the domain and MVP flows, rather than technical layers or speculative future scale. Java, Spring Boot, PostgreSQL, Redis, WebSocket, REST API, JWT, Gradle, JUnit, Testcontainers, Docker, and GitHub Actions remain intended starting technologies; each service/infrastructure substitution needs a recorded rationale.
 - **Domain before transport:** Controllers/WebSocket handlers and persistence infrastructure must not define the domain model. External-facing contracts must not directly expose database models.
 - **Integration-first, not integration-now:** Use clear application boundaries and stable contracts so a future public API is additive. Do not generalize before there is a real consumer/use case.
 - **N-participant-ready model:** Model conversation participation separately so group chat can be enabled later without a data-model rewrite; enforce the v1 two-participant rule in application/domain validation.
 - **Reliability as a learning requirement:** Design explicitly for timeout, retry, reconnect, duplicate requests/messages, concurrent actions, and authorization failure. The exact guarantees are open until specified below.
-- **Simple, measurable scaling:** Introduce Redis, event infrastructure, service extraction, or distributed WebSockets only for a named requirement/bottleneck with trade-offs recorded.
+- **Deliberate distributed complexity:** Microservices are an explicit initial decision (#11), not an accidental result. Introduce Redis, event infrastructure, distributed WebSockets, or additional service splits only for a named requirement/bottleneck with trade-offs recorded.
 
 ### Non-goals for initial architecture
 
-No Kafka merely to be “event-driven”; begin with in-process domain events when an event is useful. No distributed design merely to simulate scale. No public database access as an integration method.
+No Kafka merely to be “event-driven”; begin with the simplest service-to-service integration that meets a named requirement. No public database access as an integration method. Each service owns its data and exposes a contract rather than sharing its database.
 
 ---
 
@@ -120,7 +121,7 @@ No Kafka merely to be “event-driven”; begin with in-process domain events wh
 
 - Founder-managed email allowlisting is sufficient for private MVP onboarding; account recovery and email change can wait.
 - One web client session per user is adequate for MVP validation; simultaneous-device semantics are not yet required.
-- A single deployable instance is sufficient for MVP. Horizontal scale is not an MVP acceptance condition.
+- MVP may run with one instance per service; horizontal scale is not an MVP acceptance condition.
 - Message content is plain text and sensitive enough to require normal authenticated transport and access control, but end-to-end encryption is not currently required.
 - Friends can be invited/identified through a simple workflow; a contacts/social graph is not implied.
 
@@ -167,4 +168,4 @@ For externally observable events or integration contracts, additionally record: 
 
 ## 8. Next recommended lifecycle step
 
-Resolve the remaining participant-lifecycle question in section 6, then model `User`, `Conversation`, `ConversationParticipant`, and `Message`. Define invariants before database tables or REST/WebSocket payloads. Decisions #7–#10 should be reflected directly in the model and contracts.
+Resolve the remaining participant-lifecycle question in section 6, then model `User`, `Conversation`, `ConversationParticipant`, and `Message`. Define invariants before database tables or REST/WebSocket payloads. Decisions #7–#10 should be reflected directly in the model and contracts. Before implementation, define a minimal service map, service-owned data, synchronous/asynchronous contract boundaries, and failure modes for the end-to-end MVP slice.
