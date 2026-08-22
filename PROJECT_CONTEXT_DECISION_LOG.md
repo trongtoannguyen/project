@@ -42,6 +42,12 @@ Do not prioritize feature parity, visual polish, user growth, or generic externa
 | #2 | 2026-08-16 | Active | MVP v1 exposes **only 1-to-1 conversations**. Group chat is the immediately subsequent milestone. | Learn connection lifecycle, persistence, delivery, and read flow before group fan-out. Model participation for N users from the start, but enforce two participants in MVP. | Revisit after stable real-user validation of MVP v1 real-time delivery. |
 | #3 | 2026-08-16 | Active | Build a web client first; mobile follows later. The founder builds both backend and frontend. | Web enables faster end-to-end validation. MVP frontend is a functional test client, not a UI-polish project. | Revisit after MVP feedback or a mobile requirement. |
 | #4 | 2026-08-16 | Active | Start as a modular monolith with clear domain boundaries and integration-ready contracts. Do not build a generic external API in parallel with MVP. | The end-user application reveals what should become generic. A later API must be an access layer over application/domain contracts—not a database-model exposure. | Revisit when a concrete external consumer needs integration. |
+| #5 | 2026-08-23 | Active | MVP identity uses a normalized, globally unique, immutable email. Registration is invite-only through a founder-managed email allowlist; no email invitation delivery workflow is required. | Fits a small private test while avoiding public-registration abuse and email-delivery scope. Email changes and password recovery are deferred. | Revisit when public onboarding or account recovery is required. |
+| #6 | 2026-08-23 | Active | A pair of distinct users has exactly one direct conversation; self-messaging is not allowed. | Prevents duplicate threads and simplifies conversation list, history, and receipt semantics. | Revisit only if multiple named threads per pair becomes a user need. |
+| #7 | 2026-08-23 | Active | Messages have a server-assigned, unique, strictly increasing `sequenceNumber` within a conversation. Client timestamps do not determine order; gap-free numbering is not a public guarantee. | Produces a deterministic order under concurrent sends and supports history sync and read positions without imposing unnecessary sequence guarantees. | Revisit if a different ordering or replication requirement emerges. |
+| #8 | 2026-08-23 | Active | The client creates and retains a UUID `clientMessageId` for each user send across retries/reconnects. The server enforces uniqueness on `(conversationId, senderId, clientMessageId)`; an equivalent retry returns the originally accepted message, while the same key with different content conflicts. | Prevents duplicate messages when a network response is lost and makes retry behaviour explicit. Server `messageId` remains the canonical identifier. | Revisit when additional client types or delivery protocols require a broader idempotency contract. |
+| #9 | 2026-08-23 | Active | Store each participant's monotonic `lastReadSequence` per conversation rather than a receipt record per message. Read state is derived: messages at or below the other participant's read position are read. | Compact for MVP and naturally extends to group conversations; no write per message is needed. | Revisit if per-message/per-device receipt auditability becomes a requirement. |
+| #10 | 2026-08-23 | Active | WebSocket delivers live messages only. After reload or reconnect, the client synchronizes persisted missed messages through REST using its last known per-conversation sequence; it then resumes live WebSocket delivery. | Separates durable sync from transient socket notification, makes recovery testable, and avoids socket-session backfill complexity. | Revisit for multi-device sync, offline-first clients, or a justified richer delivery protocol. |
 
 ### Interpretation notes
 
@@ -60,12 +66,12 @@ An invited user can register and log in on the web client, start or access a dir
 
 | Capability | MVP v1 is accepted when… | Explicit boundary |
 | --- | --- | --- |
-| Authentication | A user can register and log in with email/password, receive and use JWT-based authentication, and cannot access another user's protected resources. | Password-reset, social login, MFA, and external OAuth are excluded. |
-| Direct conversation | An authenticated user can create or access a 1-to-1 conversation and list their own conversations. | A conversation accepts exactly two distinct participants in v1. Group creation and group membership management are excluded. |
-| Text message | A participant can send a non-empty text message only to a direct conversation they belong to. | Attachments, edit/delete, reactions, replies, and rich content are excluded. |
-| Persistence and history | Accepted messages survive reload/reconnect; an authorized participant can retrieve their direct-conversation history. | Search, retention policies, export, and advanced pagination UX are excluded; API-level pagination policy remains a design question. |
-| Real-time delivery | If sender and recipient are connected, the recipient receives the newly accepted message through WebSocket without manually reloading. | Cross-node socket routing, push notifications, and a delivered-status guarantee are excluded. Reconnect behaviour must recover history rather than silently losing accepted messages. |
-| Basic read receipt | A recipient can mark a message/conversation read, and the sender can see an unambiguous basic read state. | `delivered` is not a separate MVP state. Per-device and per-message receipt detail are not yet fixed. |
+| Authentication | A user on the founder-managed allowlist can register and log in with email/password, receive and use JWT-based authentication, and cannot access another user's protected resources. | Email is normalized, globally unique, and immutable in MVP. Password-reset, social login, MFA, external OAuth, and a full invitation-email workflow are excluded. |
+| Direct conversation | An authenticated user can create or access their one direct conversation with another distinct user and list their own conversations. | A conversation accepts exactly two participants in v1; a user cannot message themselves or create another thread for the same pair. Group creation and membership management are excluded. |
+| Text message | A participant can send a non-empty text message only to a direct conversation they belong to; retried sends do not create duplicates. | Each send carries a retained client idempotency key. Attachments, edit/delete, reactions, replies, and rich content are excluded. |
+| Persistence and history | Accepted messages survive reload/reconnect; an authorized participant can retrieve messages after their last known conversation sequence. | Messages are ordered by server-assigned `sequenceNumber`; search, retention policies, export, and advanced pagination UX are excluded. |
+| Real-time delivery | If sender and recipient are connected, the recipient receives the newly accepted message through WebSocket without manually reloading. After reconnect/reload, the client recovers missed persisted messages through REST sync, then resumes live socket delivery. | Cross-node socket routing, push notifications, socket-driven backfill, and a delivered-status guarantee are excluded. |
+| Basic read receipt | A recipient can advance their conversation `lastReadSequence`; the sender sees which messages are read from that position. | `delivered` is not a separate MVP state. Per-device and per-message receipt records are excluded. |
 | Operational usability | Invited users can use the normal flow without the founder manually repairing routine failures. Failures are surfaced clearly and reconnect/reload does not erase accepted messages. | This is a small private test release, not an uptime/SLA commitment. |
 
 ### Should-have follow-up within the MVP phase (not a v1 acceptance gate)
@@ -112,7 +118,7 @@ No Kafka merely to be “event-driven”; begin with in-process domain events wh
 
 ### Working assumptions (not decisions; validate or replace)
 
-- Email/password is sufficient for private MVP identity and account recovery can wait.
+- Founder-managed email allowlisting is sufficient for private MVP onboarding; account recovery and email change can wait.
 - One web client session per user is adequate for MVP validation; simultaneous-device semantics are not yet required.
 - A single deployable instance is sufficient for MVP. Horizontal scale is not an MVP acceptance condition.
 - Message content is plain text and sensitive enough to require normal authenticated transport and access control, but end-to-end encryption is not currently required.
@@ -129,17 +135,11 @@ No Kafka merely to be “event-driven”; begin with in-process domain events wh
 
 ## 6. Decisions required before domain modeling
 
-These questions materially affect aggregates, invariants, identifiers, authorization, or message/receipt semantics. Resolve them before treating the domain model as stable.
+The following question materially affects authorization and the participant lifecycle. Resolve it before treating the domain model as stable.
 
-1. **Identity and lifecycle:** Is email globally unique and immutable for MVP? Are users allowed to self-register freely, or is registration invite-only for the private test?
-2. **Direct-conversation uniqueness:** Must a pair of users have exactly one active direct conversation, or may they create multiple threads? Can a user message themselves?
-3. **Message ordering:** What ordering must users observe within a conversation—server acceptance order, client timestamp, or another rule? Is a gap-free sequence required?
-4. **Duplicate/idempotency behaviour:** Will the client supply a message idempotency key? On retry/reconnect, should the server return the original accepted message rather than create another?
-5. **Read-receipt unit:** Is “read” stored per message, or as a participant’s last-read position per conversation? What precisely appears to the sender in MVP?
-6. **Offline/reconnection contract:** Does “offline history” mean polling/REST history after reconnect is sufficient, or must WebSocket automatically backfill missed messages? What is the user-visible recovery expectation?
-7. **Authorization and membership lifecycle:** Can either participant leave, archive, block, or delete a direct conversation in MVP? If none applies, is membership immutable once created?
+1. **Authorization and membership lifecycle:** Can either participant leave, archive, block, or delete a direct conversation in MVP? If none applies, is membership immutable once created?
 
-Questions that can wait until after initial domain modeling: exact frontend framework, presence protocol, delivered-state definition, and group membership roles.
+Questions that can wait until after initial domain modeling: exact frontend framework, presence protocol, delivered-state definition, group membership roles, and public/invite-email onboarding.
 
 ---
 
@@ -167,4 +167,4 @@ For externally observable events or integration contracts, additionally record: 
 
 ## 8. Next recommended lifecycle step
 
-Resolve the seven domain-shaping questions in section 6, then model `User`, `Conversation`, `ConversationParticipant`, `Message`, and the chosen read-receipt representation. Define invariants before database tables or REST/WebSocket payloads.
+Resolve the remaining participant-lifecycle question in section 6, then model `User`, `Conversation`, `ConversationParticipant`, and `Message`. Define invariants before database tables or REST/WebSocket payloads. Decisions #7–#10 should be reflected directly in the model and contracts.
