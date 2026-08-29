@@ -10,10 +10,12 @@ Không sở hữu dữ liệu `User` — chỉ giữ `userId` như reference thu
 
 ## 2. Dữ liệu sở hữu (service-owned data)
 
+> DDL đầy đủ: xem `DATABASE_SCHEMA.md` § Messaging Service.
+
 | Bảng | Field chính | Ghi chú |
 | --- | --- | --- |
 | `Conversation` | `conversationId` (PK, UUID — deterministic cho 1-1, xem mục 3), `createdAt` | Immutable participant set sau khi tạo (#12) |
-| `ConversationParticipant` | `(conversationId, userId)` composite, `lastReadSequence` | Tạo cùng lúc với `Conversation`, không join sau (v1) |
+| `ConversationParticipant` | `(conversationId, userId)` composite, `lastReadSequence`, `recipientVerificationStatus` | Tạo cùng lúc với `Conversation`, không join sau (v1). `recipientVerificationStatus` ∈ {`VERIFIED`, `PENDING`, `FAILED`} — xem mục 4.0 |
 | `Message` | `messageId` (PK), `conversationId`, `senderId`, `sequenceNumber`, `clientMessageId`, `content`, `createdAt` | `conversationId`/`senderId` là reference thuần |
 
 ## 3. Invariant liên-aggregate và cơ chế enforce
@@ -27,6 +29,26 @@ Vì cùng DB, các invariant liên-aggregate (PROJECT_CONTEXT.md Section 9.5) đ
 | `senderId` phải là participant hợp lệ của `conversationId` | JOIN nội bộ trong cùng transaction — không cần gọi Identity Service (JWT đã verify sẵn `userId`, chỉ cần check tồn tại trong `ConversationParticipant`) |
 
 ## 4. API bên ngoài (Client ↔ Messaging Service)
+
+### 4.0 Tạo/lấy conversation — `POST /conversations`
+
+Request: `{ "recipientUserId": "<uuid>" }`. `senderId` lấy từ JWT claim.
+
+Thứ tự xử lý (1 transaction, ngoại trừ bước 4 là network call trước transaction):
+
+1. Verify `recipientUserId ≠ senderId` (chặn self-messaging, #6) → `400` nếu vi phạm.
+2. Sort `(senderId, recipientUserId)`, sinh `conversationId = UUIDv5(namespace, sorted pair)` (Cách 3, mục 3).
+3. Check `conversations.id` đã tồn tại:
+   - Đã tồn tại → trả về ngay (bước 6), bỏ qua bước 4–5.
+   - Chưa tồn tại → tiếp bước 4.
+4. Gọi `GET /users/{recipientUserId}` (Identity Service):
+   - 200 → `recipientVerificationStatus = VERIFIED`.
+   - Timeout/lỗi mạng → `recipientVerificationStatus = PENDING` (fail-open, vẫn tạo — xem mục 6).
+   - 404 thật → **từ chối tạo**, trả `404` cho client, không insert gì.
+5. Insert `conversations` + 2 row `conversation_participants` (participant gọi request luôn `VERIFIED`; participant kia mang status từ bước 4), commit.
+6. Trả **200 OK**: `conversationId`, `createdAt`, danh sách participant.
+
+Error codes: `400` self-messaging, `404` recipient không tồn tại (xác nhận thật, không phải timeout).
 
 ### 4.1 Gửi message — `POST /conversations/{conversationId}/messages`
 
@@ -64,6 +86,16 @@ Request: `{ "sequenceNumber": N }`. `userId` từ JWT.
 5. Nếu có thay đổi thực sự (không phải no-op): gọi Realtime Service async, báo `conversationId`, `readerId`, `lastReadSequence` mới.
 6. Trả 200 OK với `lastReadSequence` hiện tại.
 
+### 4.4 List conversation — `GET /conversations`
+
+`userId` từ JWT. Query `conversation_participants WHERE user_id = <userId>` JOIN `conversations`.
+
+Trả về danh sách `{ conversationId, recipientUserId, lastReadSequence, createdAt }`. **Không kèm preview tin nhắn cuối** ở v1 (ngoài acceptance criteria Section 3) — client tự gọi 4.2 nếu cần xem nội dung.
+
+### Lazy retry cho `recipientVerificationStatus = PENDING`
+
+Áp dụng ở mọi endpoint 4.1–4.4 chạm tới 1 conversation cụ thể: nếu participant còn lại có status `PENDING`, thử gọi lại `GET /users/{userId}` 1 lần trước khi tiếp tục xử lý chính; cập nhật status theo kết quả. Không chặn thao tác chính dù kết quả ra sao, **trừ khi ra `FAILED`** (404 xác nhận thật ở lần retry) — lúc đó từ chối thao tác mới trên conversation này, giữ nguyên dữ liệu đã có (không xóa, theo tinh thần #12).
+
 ## 5. Dependency & giao tiếp với Realtime Service (outbound)
 
 - **Loại giao tiếp:** HTTP nội bộ, fire-and-forget, timeout ngắn. Không dùng message broker (Kafka/RabbitMQ) — chưa có yêu cầu multi-instance Realtime Service để cần pub/sub thật (#4 non-goals).
@@ -75,19 +107,23 @@ Request: `{ "sequenceNumber": N }`. `userId` từ JWT.
 
 ## 6. Dependency vào Identity Service
 
-- **Không có runtime call.** Xác thực JWT stateless (xem `identity-service-boundary.md` mục 4) — chỉ cần shared public key/secret cấu hình lúc deploy.
-- Nếu Identity Service down, Messaging Service vẫn hoạt động bình thường cho user đã có token hợp lệ.
+- **JWT verify: không có runtime call.** Stateless (xem `identity-service-boundary.md` mục 4) — chỉ cần shared public key/secret cấu hình lúc deploy.
+- **Dependency mới, phạm vi hẹp:** `POST /conversations` gọi `GET /users/{userId}` (Identity Service) để verify `recipientUserId` tồn tại — chỉ lúc tạo conversation mới (mục 4.0), không phải hot path (gửi/nhận tin nhắn không gọi). Nếu Identity Service down lúc này: fail-open, đánh dấu `PENDING`, lazy retry ở lần tương tác kế tiếp trên conversation đó (mục 4.0).
+- Nếu Identity Service down, Messaging Service vẫn hoạt động bình thường cho: xác thực JWT (mọi endpoint), gửi/nhận/sync tin nhắn ở conversation đã tồn tại. Chỉ tạo conversation mới bị ảnh hưởng (fail-open, không chặn).
 
-## 7. Failure modes tổng hợp (luồng gửi message)
+## 7. Failure modes tổng hợp
 
 | Tình huống | Xử lý |
 | --- | --- |
-| Client retry do timeout | Idempotency key (`clientMessageId`) đảm bảo không tạo trùng |
+| Client retry do timeout (gửi message) | Idempotency key (`clientMessageId`) đảm bảo không tạo trùng |
 | 2 message cùng lúc, cùng conversation | Serialize bằng `SELECT FOR UPDATE` |
 | Service crash trước commit | DB tự rollback, không cần xử lý thêm |
 | Service crash sau commit, trước khi gọi Realtime | Message không mất — REST sync xử lý; client retry với cùng `clientMessageId` nếu response bị mất cũng an toàn (idempotent) |
 | Realtime Service down khi gọi báo tin | Chấp nhận được — không retry, REST sync là lưới an toàn |
 | `sinceSequence` bất thường khi sync | Log lại, cân nhắc trả lỗi rõ thay vì âm thầm trả rỗng |
+| Identity Service down/timeout lúc tạo conversation | Fail-open — vẫn tạo, `recipientVerificationStatus = PENDING`, lazy retry ở lần tương tác kế tiếp (mục 4.0, 4.4) |
+| Identity Service xác nhận rõ recipient không tồn tại (404 thật) lúc tạo | Từ chối tạo ngay, trả `404` cho client (không phải fail-open — đây là câu trả lời chắc chắn) |
+| Lazy retry sau đó xác nhận recipient không tồn tại (`PENDING` → `FAILED`) | Từ chối thao tác mới trên conversation đó, giữ nguyên dữ liệu cũ (không xóa, theo #12) |
 
 ## 8. Điều chưa quyết / để lại sau
 
@@ -95,3 +131,4 @@ Request: `{ "sequenceNumber": N }`. `userId` từ JWT.
 - Cơ chế xử lý khi group chat làm tăng contention trên `SELECT FOR UPDATE` (revisit khi có bottleneck thật, theo #2 nguyên tắc làm việc).
 - Giá trị cụ thể của UUIDv5 namespace (1 UUID cố định của app, sinh 1 lần, dùng lại mọi lần hash — chi tiết implementation, không phải quyết định kiến trúc).
 - Cơ chế sinh `conversationId` cho group chat — quyết định khi tới milestone đó, phụ thuộc quy tắc nghiệp vụ lúc đó: nếu "1 tổ hợp participant = 1 conversation duy nhất" vẫn đúng cho group, deterministic UUIDv5 mở rộng tự nhiên (hash cả participant set đã sort); nếu group cho phép nhiều conversation trùng participant set (giống Slack group DM), cần cơ chế khác (UUID random, hoặc hash + discriminator) — không kế thừa tự động từ cơ chế 1-1.
+- Cơ chế xác thực cho service-to-service call (Messaging → Identity `GET /users/{userId}`): dùng JWT sẵn có của request gốc, hay service credential riêng — chi tiết implementation.

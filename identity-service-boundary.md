@@ -8,6 +8,8 @@ Sở hữu domain `User` — identity, authentication, và không gì khác. Kh�
 
 ## 2. Dữ liệu sở hữu (service-owned data)
 
+> DDL đầy đủ: xem `DATABASE_SCHEMA.md` § Identity Service.
+
 Tương ứng aggregate `User` (xem PROJECT_CONTEXT.md Section 9.1):
 
 | Field | Nguồn gốc | Ghi chú |
@@ -19,11 +21,12 @@ Tương ứng aggregate `User` (xem PROJECT_CONTEXT.md Section 9.1):
 
 Không có bảng nào khác. Không JOIN, không lưu reference tới `conversationId`/`messageId`.
 
-## 3. API bên ngoài (Client ↔ Identity Service)
+## 3. API bên ngoài
 
 - `POST /auth/register` — chỉ chấp nhận email nằm trong allowlist (#5), không có invitation-email workflow.
 - `POST /auth/login` — trả JWT access token đã ký (xem mục 4).
 - Không có password-reset, MFA, OAuth trong v1 (Section 3, MVP acceptance boundary).
+- `GET /users/{userId}` — trả thông tin cơ bản (`userId`, `email`, `createdAt`). Dùng bởi Messaging Service để verify `recipientUserId` tồn tại lúc tạo conversation (xem mục 5.1). Yêu cầu JWT hợp lệ (service-to-service call vẫn mang token, hoặc dùng service credential riêng — chi tiết implementation).
 
 ## 4. JWT issuance & verification contract
 
@@ -36,7 +39,7 @@ Không có bảng nào khác. Không JOIN, không lưu reference tới `conversa
 
 - Identity Service **không phụ thuộc runtime vào bất kỳ service nào khác**.
 - Nếu Identity Service down: user hiện tại (đã có token hợp lệ) **không bị ảnh hưởng** ở Messaging/Realtime Service — đây chính là lý do chọn stateless verify. Chỉ đăng nhập mới bị chặn.
-- Identity Service không nhận request nào từ Messaging/Realtime Service (không có dependency ngược).
+- **Dependency inbound mới (5.1):** Messaging Service gọi `GET /users/{userId}` lúc tạo conversation mới (xem `messaging-service-boundary.md` §4 — `POST /conversations`). Đây là dependency **hẹp phạm vi, không phải hot path** — chỉ xảy ra khi tạo conversation lần đầu giữa 1 cặp user, không xảy ra ở gửi/nhận tin nhắn. Nếu Identity Service down lúc này, Messaging Service fail-open (vẫn tạo conversation, đánh dấu `PENDING`, retry lười ở lần tương tác kế tiếp) — không chặn người dùng, không tạo cascading failure trên hot path.
 
 ## 6. Điều chưa quyết / để lại sau
 
