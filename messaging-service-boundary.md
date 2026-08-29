@@ -12,7 +12,7 @@ Không sở hữu dữ liệu `User` — chỉ giữ `userId` như reference thu
 
 | Bảng | Field chính | Ghi chú |
 | --- | --- | --- |
-| `Conversation` | `conversationId` (PK), `createdAt` | Immutable participant set sau khi tạo (#12) |
+| `Conversation` | `conversationId` (PK, UUID — deterministic cho 1-1, xem mục 3), `createdAt` | Immutable participant set sau khi tạo (#12) |
 | `ConversationParticipant` | `(conversationId, userId)` composite, `lastReadSequence` | Tạo cùng lúc với `Conversation`, không join sau (v1) |
 | `Message` | `messageId` (PK), `conversationId`, `senderId`, `sequenceNumber`, `clientMessageId`, `content`, `createdAt` | `conversationId`/`senderId` là reference thuần |
 
@@ -22,7 +22,7 @@ Vì cùng DB, các invariant liên-aggregate (PROJECT_CONTEXT.md Section 9.5) đ
 
 | Invariant | Cơ chế |
 | --- | --- |
-| 1 cặp `(userA, userB)` chỉ có 1 `Conversation` (#6) | Unique constraint DB trên cặp userId đã normalize thứ tự (ví dụ luôn lưu `userId` nhỏ hơn trước) |
+| 1 cặp `(userA, userB)` chỉ có 1 `Conversation` (#6) | **Deterministic Conversation ID** — `conversationId = UUIDv5(namespace, sorted(userA_id, userB_id))`. Application layer sort 2 userId theo thứ tự cố định, nối chuỗi, sinh UUIDv5 (RFC 4122, name-based) làm `conversationId` trước khi insert. Vì cùng 1 cặp luôn cho ra cùng 1 UUID, "tạo mới" tự nhiên trở thành upsert trên chính PK `conversations.id` — PK constraint sẵn có tự chặn trùng, không cần cột phụ, không cần advisory lock riêng. **Chỉ áp dụng cho conversation 1-1 (v1).** Group chat (khi tới milestone đó) cần cơ chế sinh ID riêng — không kế thừa tự động, vì quy tắc nghiệp vụ "1 tổ hợp participant = 1 conversation duy nhất" chưa chắc đúng cho group (xem #13 revisit trigger). |
 | `sequenceNumber` strictly increasing, không trùng, trong 1 `conversationId` (#7) | **Cơ chế A đã chốt:** `SELECT ... FOR UPDATE` trên row `Conversation` trong cùng transaction với insert `Message`. Lý do chọn: contention thấp (1-1 conversation, tối đa 2 writer), đơn giản, tự nhiên gap-free. Revisit khi group chat làm tăng contention thật sự. |
 | `senderId` phải là participant hợp lệ của `conversationId` | JOIN nội bộ trong cùng transaction — không cần gọi Identity Service (JWT đã verify sẵn `userId`, chỉ cần check tồn tại trong `ConversationParticipant`) |
 
@@ -93,3 +93,5 @@ Request: `{ "sequenceNumber": N }`. `userId` từ JWT.
 
 - Con số cụ thể cho page size của sync lịch sử (implementation detail).
 - Cơ chế xử lý khi group chat làm tăng contention trên `SELECT FOR UPDATE` (revisit khi có bottleneck thật, theo #2 nguyên tắc làm việc).
+- Giá trị cụ thể của UUIDv5 namespace (1 UUID cố định của app, sinh 1 lần, dùng lại mọi lần hash — chi tiết implementation, không phải quyết định kiến trúc).
+- Cơ chế sinh `conversationId` cho group chat — quyết định khi tới milestone đó, phụ thuộc quy tắc nghiệp vụ lúc đó: nếu "1 tổ hợp participant = 1 conversation duy nhất" vẫn đúng cho group, deterministic UUIDv5 mở rộng tự nhiên (hash cả participant set đã sort); nếu group cho phép nhiều conversation trùng participant set (giống Slack group DM), cần cơ chế khác (UUID random, hoặc hash + discriminator) — không kế thừa tự động từ cơ chế 1-1.
